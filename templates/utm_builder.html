@@ -1,0 +1,600 @@
+{% extends "base.html" %}
+
+{% block title %}UTM 빌더{% endblock %}
+{% set active = 'utm-builder' %}
+
+{% block head %}
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+{% endblock %}
+
+{% block content %}
+
+<!-- 구글 시트 연동 -->
+<section class="card">
+  <p class="card-title">구글 시트 연동</p>
+  <div style="display:flex;gap:8px;align-items:center">
+    <input type="text" id="sheetUrl" placeholder="구글 시트 URL 입력"
+      style="flex:1;height:38px;padding:0 12px;border:1px solid var(--border);border-radius:var(--radius);font-size:13px;background:var(--surface);color:var(--text)" />
+    <button class="btn btn-primary" onclick="loadSheet()" style="height:38px;padding:0 18px;white-space:nowrap">
+      불러오기
+    </button>
+  </div>
+  <p id="sheetStatus" style="font-size:12px;color:var(--text3);margin-top:8px"></p>
+</section>
+
+<!-- 광고주 선택 -->
+<section class="card" id="clientSection" style="display:none">
+  <p class="card-title">광고주 선택</p>
+  <select id="clientSelect" onchange="onClientChange()"
+    style="width:100%;height:38px;padding:0 12px;border:1px solid var(--border);border-radius:var(--radius);font-size:13px;background:var(--surface);color:var(--text)">
+    <option value="">광고주를 선택하세요</option>
+  </select>
+</section>
+
+<!-- UTM 입력 폼 -->
+<section class="card" id="formSection" style="display:none">
+  <p class="card-title">UTM 설정</p>
+
+  <!-- 랜딩 URL -->
+  <div class="form-row" style="margin-bottom:16px">
+    <label class="form-label">랜딩 URL <span style="color:#c0392b">*</span></label>
+    <input type="text" id="landingUrl" placeholder="https://example.com/page"
+      style="width:100%;height:38px;padding:0 12px;border:1px solid var(--border);border-radius:var(--radius);font-size:13px;background:var(--surface);color:var(--text)" />
+  </div>
+
+  <!-- 동적 UTM 파라미터 폼 -->
+  <div id="paramFields"></div>
+</section>
+
+<!-- 생성 버튼 -->
+<button class="btn btn-primary" id="generateBtn" onclick="generateUrls()"
+  style="width:100%;height:44px;font-size:14px;margin-bottom:16px;justify-content:center;display:none">
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+  URL 생성
+</button>
+
+<div class="status" id="statusBar" role="status" aria-live="polite"></div>
+
+<!-- 결과 -->
+<section class="card" id="resultSection" style="display:none">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+    <span id="resultCount" style="font-size:13px;color:var(--text2)"></span>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-sm" onclick="copyAll()">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+        전체 복사
+      </button>
+      <button class="btn btn-sm" onclick="downloadExcel()">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+        엑셀
+      </button>
+    </div>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead id="resultHead"></thead>
+      <tbody id="resultBody"></tbody>
+    </table>
+  </div>
+</section>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ── 상태 ──────────────────────────────────────────────
+const SHEET_ID = '1UCIkcQq8SBs-_5cahIxQMmMEnjwU4WfDX48zMI2RImo';
+let sheetUrl   = '';
+let clients    = [];   // CLIENT_MASTER
+let paramConfig = [];  // UTM_PARAM_CONFIG
+let codeMaster  = [];  // UTM_CODE_MASTER
+let combineRule = [];  // UTM_COMBINE_RULE
+let currentClient = null;
+let lastResult = [];
+
+// ── 구글 시트 읽기 ─────────────────────────────────────
+async function fetchSheet(sheetName) {
+  const res = await fetch('/gsheet', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url: sheetUrl, sheet: sheetName }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `시트 읽기 실패: ${sheetName}`);
+  }
+  const text = await res.text();
+  return parseCSV(text);
+}
+
+function parseCSV(text) {
+  const lines = text.trim().split('\n');
+  const headers = parseCSVLine(lines[0]);
+  return lines.slice(1).map(line => {
+    const vals = parseCSVLine(line);
+    const obj = {};
+    headers.forEach((h, i) => obj[h.trim()] = (vals[i] || '').trim());
+    return obj;
+  }).filter(row => Object.values(row).some(v => v));
+}
+
+function parseCSVLine(line) {
+  const result = [];
+  let cur = '', inQuote = false;
+  for (let i = 0; i < line.length; i++) {
+    if (line[i] === '"') {
+      if (inQuote && line[i+1] === '"') { cur += '"'; i++; }
+      else inQuote = !inQuote;
+    } else if (line[i] === ',' && !inQuote) {
+      result.push(cur); cur = '';
+    } else {
+      cur += line[i];
+    }
+  }
+  result.push(cur);
+  return result;
+}
+
+// ── 시트 불러오기 ──────────────────────────────────────
+async function loadSheet() {
+  sheetUrl = document.getElementById('sheetUrl').value.trim();
+  if (!sheetUrl) { setStatus('구글 시트 URL을 입력해주세요.', 'error'); return; }
+  // URL 저장
+  await fetch('/settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ gsheet_url: sheetUrl }),
+  });
+
+  setLoading('시트 불러오는 중...');
+  try {
+    let guideData = [];
+    [clients, paramConfig, codeMaster, combineRule, guideData] = await Promise.all([
+          fetchSheet('CLIENT_MASTER'),
+          fetchSheet('UTM_PARAM_CONFIG'),
+          fetchSheet('UTM_CODE_MASTER'),
+          fetchSheet('UTM_COMBINE_RULE'),
+          fetchSheet('UTM_GUIDE'),
+        ]);
+    window._guideData = guideData;  
+
+    // 광고주 목록 렌더
+    const sel = document.getElementById('clientSelect');
+    sel.innerHTML = '<option value="">광고주를 선택하세요</option>';
+    clients.filter(c => c['사용여부'] === 'Y').forEach(c => {
+      const opt = document.createElement('option');
+      opt.value = c['client_id'];
+      opt.textContent = c['광고주명'];
+      sel.appendChild(opt);
+    });
+
+    document.getElementById('clientSection').style.display = 'block';
+    document.getElementById('sheetStatus').textContent = `✓ 불러오기 완료 — 광고주 ${clients.filter(c=>c['사용여부']==='Y').length}개`;
+    clearStatus();
+  } catch(e) {
+    setStatus(`오류: ${e.message}`, 'error');
+  }
+}
+
+// ── 광고주 선택 ────────────────────────────────────────
+function onClientChange() {
+  const clientId = document.getElementById('clientSelect').value;
+  if (!clientId) {
+    document.getElementById('formSection').style.display = 'none';
+    document.getElementById('creativeSection').style.display = 'none';
+    document.getElementById('generateBtn').style.display = 'none';
+    document.getElementById('resultSection').style.display = 'none';
+    return;
+  }
+  currentClient = clientId;
+  renderParamFields(clientId);
+  document.getElementById('formSection').style.display = 'block';
+  document.getElementById('generateBtn').style.display = 'flex';
+  document.getElementById('resultSection').style.display = 'none';
+}
+
+// ── 파라미터 폼 렌더 ────────────────────────────────────
+function renderParamFields(clientId) {
+  const params = paramConfig
+    .filter(p => p['client_id'] === clientId && p['사용여부'] === 'Y')
+    .sort((a, b) => Number(a['정렬순서']) - Number(b['정렬순서']));
+
+  const container = document.getElementById('paramFields');
+  container.innerHTML = '';
+
+  let hasCombine = false;
+
+  params.forEach(param => {
+    const key    = param['param_key'];
+    const label  = param['표시명'];
+    const type   = param['입력방식'];
+    const req    = param['필수여부'] === 'Y';
+
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'margin-bottom:16px';
+
+    const lbl = document.createElement('label');
+    lbl.className = 'form-label';
+    lbl.innerHTML = `${esc(label)} ${req ? '<span style="color:#c0392b">*</span>' : ''}`;
+    wrap.appendChild(lbl);
+
+    if (type === 'text') {
+      const inp = document.createElement('input');
+      inp.type = 'text';
+      inp.id = `param_${key}`;
+      inp.placeholder = label + ' 입력';
+      inp.style.cssText = 'width:100%;height:38px;padding:0 12px;border:1px solid var(--border);border-radius:var(--radius);font-size:13px;background:var(--surface);color:var(--text)';
+      wrap.appendChild(inp);
+
+    } else if (type === 'select') {
+      const sel = document.createElement('select');
+      sel.id = `param_${key}`;
+      sel.style.cssText = 'width:100%;height:38px;padding:0 12px;border:1px solid var(--border);border-radius:var(--radius);font-size:13px;background:var(--surface);color:var(--text)';
+
+      const defaultOpt = document.createElement('option');
+      defaultOpt.value = '';
+      defaultOpt.textContent = `${label} 선택`;
+      sel.appendChild(defaultOpt);
+
+      // code_master에서 해당 field_key 옵션 가져오기
+      const options = codeMaster.filter(c =>
+        c['client_id'] === clientId &&
+        c['field_key'] === key &&
+        c['사용여부'] === 'Y' &&
+        c['input_type'] === 'select'
+      );
+      options.forEach(opt => {
+        const o = document.createElement('option');
+        o.value = opt['code_value'];
+        o.textContent = opt['code_name'];
+        sel.appendChild(o);
+      });
+      wrap.appendChild(sel);
+
+    } else if (type === 'combine') {
+      hasCombine = true;
+      // combine 타입은 별도 섹션에서 처리
+      renderCombineFields(clientId, key, wrap, label);
+
+    } else if (type === 'date') {
+      const inp = document.createElement('input');
+      inp.type = 'date';
+      inp.id = `param_${key}`;
+      inp.style.cssText = 'width:100%;height:38px;padding:0 8px;border:1px solid var(--border);border-radius:var(--radius);font-size:13px;background:var(--surface);color:var(--text)';
+      wrap.appendChild(inp);
+    }
+
+    container.appendChild(wrap);
+  });
+
+}
+
+// ── combine 필드 렌더 ──────────────────────────────────
+function renderCombineFields(clientId, targetParam, container, label) {
+  const rules = combineRule
+    .filter(r => r['client_id'] === clientId && r['target_param'] === targetParam)
+    .sort((a, b) => Number(a['seq']) - Number(b['seq']));
+
+  const grid = document.createElement('div');
+  grid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;padding:12px;background:var(--surface2);border-radius:var(--radius);border:1px solid var(--border)';
+
+  rules.forEach(rule => {
+    const field = rule['source_field'];
+    const fieldMeta = codeMaster.find(c =>
+      c['client_id'] === clientId && c['field_key'] === field && c['사용여부'] === 'Y'
+    );
+    if (!fieldMeta) return;
+
+    const wrap = document.createElement('div');
+    const lbl = document.createElement('label');
+    lbl.style.cssText = 'display:block;font-size:11px;color:var(--text3);margin-bottom:4px';
+    lbl.textContent = fieldMeta['표시명'] || field;
+    wrap.appendChild(lbl);
+
+    const inputType = fieldMeta['input_type'];
+
+    if (inputType === 'text') {
+      const inp = document.createElement('input');
+      inp.type = 'text';
+      inp.id = `combine_${targetParam}_${field}`;
+      inp.placeholder = field;
+      inp.style.cssText = 'width:100%;height:34px;padding:0 10px;border:1px solid var(--border);border-radius:var(--radius);font-size:12px;background:var(--surface);color:var(--text)';
+      wrap.appendChild(inp);
+
+    } else if (inputType === 'date') {
+      const inp = document.createElement('input');
+      inp.type = 'date';
+      inp.id = `combine_${targetParam}_${field}`;
+      inp.style.cssText = 'width:100%;height:34px;padding:0 6px;border:1px solid var(--border);border-radius:var(--radius);font-size:12px;background:var(--surface);color:var(--text)';
+      // 오늘 날짜 기본값
+      inp.value = new Date().toISOString().slice(0, 10);
+      wrap.appendChild(inp);
+
+    } else if (inputType === 'select') {
+      const sel = document.createElement('select');
+      sel.id = `combine_${targetParam}_${field}`;
+      sel.style.cssText = 'width:100%;height:34px;padding:0 8px;border:1px solid var(--border);border-radius:var(--radius);font-size:12px;background:var(--surface);color:var(--text)';
+
+      const defaultOpt = document.createElement('option');
+      defaultOpt.value = '';
+      defaultOpt.textContent = '선택';
+      sel.appendChild(defaultOpt);
+
+      const codeGroup = fieldMeta['code_group'];
+      codeMaster
+        .filter(c => c['client_id'] === clientId && c['field_key'] === field && c['사용여부'] === 'Y' && c['input_type'] === 'select')
+        .forEach(opt => {
+          const o = document.createElement('option');
+          o.value = opt['code_value'];
+          o.textContent = opt['code_name'];
+          sel.appendChild(o);
+        });
+      wrap.appendChild(sel);
+    }
+    grid.appendChild(wrap);
+  });
+
+  // 규칙 보기 버튼
+  rules.forEach(rule => {
+    const field = rule['source_field'];
+    const guideRows = (window._guideData || []).filter(g => g['field_key'] === field);
+    if (!guideRows.length) return;
+    const btn = document.createElement('button');
+    btn.className = 'btn btn-sm';
+    btn.style.cssText = 'margin-top:8px;font-size:11px';
+    btn.textContent = `${field} 규칙 보기`;
+    btn.onclick = () => showGuideModal(field, guideRows);
+    container.appendChild(btn);
+  });
+
+  container.appendChild(grid);
+}
+
+// ── 소재명 행 추가 ─────────────────────────────────────
+function addCreativeRow() {
+  const rows = document.getElementById('creativeRows');
+  const idx  = rows.children.length + 1;
+  const row  = document.createElement('div');
+  row.style.cssText = 'display:flex;gap:8px;margin-bottom:8px;align-items:center';
+  row.innerHTML = `
+    <span style="font-size:12px;color:var(--text3);min-width:24px">${idx}</span>
+    <input type="text" placeholder="소재명 입력 (예: kv, a_pocketable)"
+      style="flex:1;height:36px;padding:0 12px;border:1px solid var(--border);border-radius:var(--radius);font-size:13px;background:var(--surface);color:var(--text)" />
+    <button onclick="this.parentElement.remove(); reindexRows()" style="background:none;border:none;cursor:pointer;color:var(--text3);font-size:18px;padding:0 4px">×</button>
+  `;
+  rows.appendChild(row);
+}
+
+function reindexRows() {
+  document.querySelectorAll('#creativeRows > div').forEach((row, i) => {
+    row.querySelector('span').textContent = i + 1;
+  });
+}
+
+// ── URL 생성 ───────────────────────────────────────────
+function generateUrls() {
+  const clientId   = currentClient;
+  const landingUrl = document.getElementById('landingUrl').value.trim();
+  if (!landingUrl) { setStatus('랜딩 URL을 입력해주세요.', 'error'); return; }
+
+  const params = paramConfig
+    .filter(p => p['client_id'] === clientId && p['사용여부'] === 'Y')
+    .sort((a, b) => Number(a['정렬순서']) - Number(b['정렬순서']));
+
+  // combine 타입이 있는지 확인
+  const hasCombine = params.some(p => p['입력방식'] === 'combine');
+
+  // 소재명 목록
+  const creatives = [''];
+
+  const results = [];
+
+  creatives.forEach(creative => {
+    const utmParams = {};
+
+    params.forEach(param => {
+      const key  = param['param_key'];
+      const type = param['입력방식'];
+
+      if (type === 'text') {
+        utmParams[key] = document.getElementById(`param_${key}`)?.value.trim() || '';
+
+      } else if (type === 'select') {
+        utmParams[key] = document.getElementById(`param_${key}`)?.value || '';
+
+      } else if (type === 'date') {
+        const val = document.getElementById(`param_${key}`)?.value || '';
+        utmParams[key] = val ? val.replace(/-/g, '').slice(2) : ''; // YYMMDD
+
+      } else if (type === 'combine') {
+        // UTM_COMBINE_RULE 순서대로 조합
+        const rules = combineRule
+          .filter(r => r['client_id'] === clientId && r['target_param'] === key)
+          .sort((a, b) => Number(a['seq']) - Number(b['seq']));
+
+        const parts = [];
+        rules.forEach((rule, idx) => {
+          const field    = rule['source_field'];
+          const sep      = rule['separator'] || '_';
+          const fieldMeta = codeMaster.find(c =>
+            c['client_id'] === clientId && c['field_key'] === field && c['사용여부'] === 'Y'
+          );
+          if (!fieldMeta) return;
+
+          let val = '';
+          const inputType = fieldMeta['input_type'];
+
+          if (inputType === 'date') {
+            const raw = document.getElementById(`combine_${key}_${field}`)?.value || '';
+            val = raw ? raw.replace(/-/g, '').slice(2) : '';
+          } else if (inputType === 'text') {
+            val = document.getElementById(`combine_${key}_${field}`)?.value.trim() || '';
+          } else if (inputType === 'select') {
+            val = document.getElementById(`combine_${key}_${field}`)?.value || '';
+          }
+
+          if (val) parts.push({ val, sep });
+        });
+
+        // 조합: 각 파트를 다음 파트의 separator로 연결
+        utmParams[key] = parts.map((p, i) =>
+          i < parts.length - 1 ? p.val + (parts[i+1]?.sep || '_') : p.val
+        ).join('');
+      }
+    });
+
+    // URL 조립
+    const urlParams = Object.entries(utmParams)
+      .filter(([, v]) => v)
+      .map(([k, v]) => `${k}=${encodeURIComponent(v)}`)
+      .join('&');
+
+    const separator = landingUrl.includes('?') ? '&' : '?';
+    const finalUrl  = urlParams ? `${landingUrl}${separator}${urlParams}` : landingUrl;
+
+    results.push({ creative, utmParams, finalUrl });
+  });
+
+  lastResult = results;
+  renderResult(results, params);
+  document.getElementById('resultSection').style.display = 'block';
+  setStatus(`생성 완료 — ${results.length}개 URL`, 'info');
+}
+
+// ── 결과 렌더 ──────────────────────────────────────────
+function renderResult(results, params) {
+  document.getElementById('resultCount').textContent = `총 ${results.length}개 URL`;
+
+  // 헤더
+  const visibleParams = params.filter(p => p['사용여부'] === 'Y');
+  document.getElementById('resultHead').innerHTML = `<tr>
+    ${visibleParams.map(p => `<th>${esc(p['표시명'])}</th>`).join('')}
+    <th>최종 URL</th>
+  </tr>`;
+
+  // 바디
+  document.getElementById('resultBody').innerHTML = results.map(r => `
+    <tr>
+      ${visibleParams.map(p => `<td>${esc(r.utmParams[p['param_key']] || '-')}</td>`).join('')}
+      <td>
+        <div style="display:flex;align-items:center;gap:6px">
+          <span style="font-size:11px;color:var(--text2);word-break:break-all">${esc(r.finalUrl)}</span>
+          <button onclick="copyText('${r.finalUrl.replace(/'/g, "\\'")}')"
+            style="background:none;border:none;cursor:pointer;color:var(--text3);flex-shrink:0" title="복사">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+// ── 복사 / 다운로드 ────────────────────────────────────
+function copyText(text) {
+  navigator.clipboard.writeText(text).then(() => setStatus('복사됐어요!', 'info'));
+}
+
+function copyAll() {
+  const urls = lastResult.map(r => r.finalUrl).join('\n');
+  navigator.clipboard.writeText(urls).then(() => setStatus('전체 복사됐어요!', 'info'));
+}
+
+function downloadExcel() {
+  if (!lastResult.length) return;
+  const clientId = currentClient;
+  const params = paramConfig
+    .filter(p => p['client_id'] === clientId && p['사용여부'] === 'Y')
+    .sort((a, b) => Number(a['정렬순서']) - Number(b['정렬순서']));
+
+  const headers = [...params.map(p => p['표시명']), '최종 URL'];
+  const rows = lastResult.map(r => [
+    ...params.map(p => r.utmParams[p['param_key']] || ''),
+    r.finalUrl,
+  ]);
+
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+  XLSX.utils.book_append_sheet(wb, ws, 'UTM');
+  XLSX.writeFile(wb, `utm_${new Date().toISOString().slice(0,10)}.xlsx`);
+}
+// ── 규칙 팝업 ──────────────────────────────────────────
+function showGuideModal(fieldKey, rows) {
+  const existing = document.getElementById('guideModal');
+  if (existing) existing.remove();
+
+  const grouped = {};
+  rows.forEach(r => {
+    const g = r['구분'] || '기타';
+    if (!grouped[g]) grouped[g] = [];
+    grouped[g].push(r);
+  });
+
+  const modal = document.createElement('div');
+  modal.id = 'guideModal';
+  modal.style.cssText = `position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.4);z-index:9999;display:flex;align-items:center;justify-content:center`;
+  modal.onclick = e => { if (e.target === modal) modal.remove(); };
+
+  const box = document.createElement('div');
+  box.style.cssText = `background:var(--surface);border-radius:var(--radius);padding:24px;max-width:640px;width:90%;max-height:80vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,0.2)`;
+
+  let html = `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+    <p style="font-size:15px;font-weight:600;color:var(--text)">${esc(fieldKey)} 규칙</p>
+    <button onclick="document.getElementById('guideModal').remove()"
+      style="background:none;border:none;cursor:pointer;font-size:20px;color:var(--text3)">×</button>
+  </div>`;
+
+  Object.entries(grouped).forEach(([group, items]) => {
+    html += `<p style="font-size:11px;font-weight:600;color:var(--text3);margin:12px 0 6px">${esc(group)}</p>`;
+    html += `<table style="width:100%;border-collapse:collapse;font-size:13px">
+      <thead><tr>
+        <th style="text-align:left;padding:6px 10px;background:var(--surface2);border:1px solid var(--border)">타겟팅명</th>
+        <th style="text-align:left;padding:6px 10px;background:var(--surface2);border:1px solid var(--border)">규칙약자</th>
+        <th style="text-align:left;padding:6px 10px;background:var(--surface2);border:1px solid var(--border)">비고</th>
+      </tr></thead><tbody>`;
+    items.forEach(r => {
+      html += `<tr>
+        <td style="padding:6px 10px;border:1px solid var(--border)">${esc(r['타겟팅명'])}</td>
+        <td style="padding:6px 10px;border:1px solid var(--border);font-family:monospace;color:var(--primary)">${esc(r['규칙약자'])}</td>
+        <td style="padding:6px 10px;border:1px solid var(--border);color:var(--text3);font-size:12px">${esc(r['비고'] || '')}</td>
+      </tr>`;
+    });
+    html += `</tbody></table>`;
+  });
+
+  box.innerHTML = html;
+  modal.appendChild(box);
+  document.body.appendChild(modal);
+}
+// ── 유틸 ──────────────────────────────────────────────
+function esc(s) {
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function setStatus(msg, type) {
+  const el = document.getElementById('statusBar');
+  el.className = `status show ${type}`; el.textContent = msg;
+}
+function setLoading(msg) {
+  const el = document.getElementById('statusBar');
+  el.className = 'status loading show';
+  el.innerHTML = `<span class="spinner"></span>${msg}`;
+}
+function clearStatus() {
+  const el = document.getElementById('statusBar');
+  el.className = 'status'; el.textContent = '';
+}
+// 저장된 URL 불러오기
+async function loadSavedUrl() {
+  try {
+    const res = await fetch('/settings');
+    const data = await res.json();
+    if (data.gsheet_url) {
+      document.getElementById('sheetUrl').value = data.gsheet_url;
+      sheetUrl = data.gsheet_url;
+      await loadSheet();
+    }
+  } catch(e) {}
+}
+
+document.addEventListener('DOMContentLoaded', loadSavedUrl);
+</script>
+{% endblock %}

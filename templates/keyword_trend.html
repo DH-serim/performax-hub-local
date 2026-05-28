@@ -1,0 +1,585 @@
+{% extends "base.html" %}
+
+{% block title %}키워드 트렌드 분석{% endblock %}
+{% set active = 'keyword-trend' %}
+
+{% block head %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+{% endblock %}
+
+{% block content %}
+
+<!-- 조회 조건 -->
+<section class="card">
+  <div style="margin-bottom:14px">
+    <p class="card-title" style="margin-bottom:4px">조회 조건</p>
+    <span style="font-size:11px;color:var(--text3)">조회 가능 기간: 2016.01.01 ~ 어제 / 최대 3년</span>
+  </div>
+  <div class="grid-3" style="margin-bottom:12px">
+    <div>
+      <label class="field-label" for="startDate">시작일</label>
+      <input type="date" id="startDate" />
+    </div>
+    <div>
+      <label class="field-label" for="endDate">종료일</label>
+      <input type="date" id="endDate" />
+    </div>
+    <div>
+      <label class="field-label" for="timeUnit">조회 단위</label>
+      <select id="timeUnit">
+        <option value="date">일간</option>
+        <option value="week">주간</option>
+        <option value="month" selected>월간</option>
+      </select>
+    </div>
+  </div>
+  <div class="grid-3">
+    <div>
+      <label class="field-label" for="device">디바이스</label>
+      <select id="device">
+        <option value="">전체</option>
+        <option value="pc">PC</option>
+        <option value="mo">모바일</option>
+      </select>
+    </div>
+    <div>
+      <label class="field-label" for="gender">성별</label>
+      <select id="gender">
+        <option value="">전체</option>
+        <option value="m">남성</option>
+        <option value="f">여성</option>
+      </select>
+    </div>
+    <div>
+      <label class="field-label" for="ages">연령</label>
+      <select id="ages">
+        <option value="">전체</option>
+        <option value="2">10대</option>
+        <option value="3">20대</option>
+        <option value="4">30대</option>
+        <option value="5">40대</option>
+        <option value="6">50대 이상</option>
+      </select>
+    </div>
+  </div>
+</section>
+
+<!-- 최근 검색 -->
+<section class="card" id="historySection">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+    <p class="card-title" style="margin-bottom:0">최근 검색</p>
+  </div>
+  <div id="historyList">
+    <p style="font-size:13px;color:var(--text3)">검색 히스토리가 없습니다.</p>
+  </div>
+</section>
+
+<!-- 키워드 입력 -->
+<section class="card">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+    <p class="card-title" style="margin-bottom:0">키워드</p>
+    <div class="mode-tab-bar">
+      <button class="mode-tab active" onclick="switchMode('simple', this)">키워드</button>
+      <button class="mode-tab" onclick="switchMode('group', this)">그룹</button>
+    </div>
+  </div>
+
+  <!-- 키워드 모드 -->
+  <div id="modeSimple">
+    <div class="kw-input-row">
+      <textarea id="kwInput" rows="2"
+        placeholder="키워드 입력 후 Ctrl+Enter (쉼표, 줄바꿈, 탭 구분으로 여러 개 동시 입력 가능, 최대 5개)"
+        onkeydown="if(event.key==='Enter'&&event.ctrlKey) addSimpleKeyword()"
+        style="height:56px"></textarea>
+      <button class="btn btn-sm" onclick="addSimpleKeyword()">추가</button>
+    </div>
+    <div class="kw-tags" id="kwTags"></div>
+  </div>
+
+  <!-- 그룹 모드 -->
+  <div id="modeGroup" style="display:none">
+    <div id="groupList"></div>
+    <button class="btn btn-ghost btn-sm" onclick="addGroup()" id="addGroupBtn">+ 그룹 추가</button>
+  </div>
+</section>
+
+<!-- 조회 버튼 -->
+<button class="btn btn-primary" id="searchBtn" onclick="runSearch()"
+  style="width:100%;height:44px;font-size:14px;margin-bottom:16px;justify-content:center">
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+  트렌드 조회
+</button>
+
+<div class="status" id="statusBar" role="status" aria-live="polite"></div>
+
+<!-- 결과 -->
+<section id="resultSection" style="display:none">
+  <div class="card">
+    <div class="stat-grid" id="statGrid"></div>
+    <p style="font-size:11px;color:var(--text3);margin-bottom:12px">
+      ※ 수치는 실제 검색량이 아닌 상대 지수(0~100)입니다. 조회 기간 내 가장 높은 검색량을 100으로 환산한 값입니다.
+    </p>
+    <div class="result-tab-bar">
+      <button class="result-tab-btn active" onclick="switchResultTab('chart', this)">라인 차트</button>
+      <button class="result-tab-btn" onclick="switchResultTab('table', this)">데이터 테이블</button>
+    </div>
+    <div class="legend" id="legendBox"></div>
+    <div id="tabChart">
+      <div class="chart-wrap">
+        <canvas id="trendChart" role="img" aria-label="키워드별 검색 트렌드 라인 차트"></canvas>
+      </div>
+    </div>
+    <div id="tabTable" style="display:none">
+      <div class="table-wrap">
+        <table>
+          <thead id="tableHead"></thead>
+          <tbody id="tableBody"></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="download-row">
+      <button class="btn btn-sm" onclick="downloadCSV()">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        CSV 다운로드
+      </button>
+      <button class="btn btn-sm" onclick="downloadExcel()">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+        엑셀 다운로드
+      </button>
+    </div>
+  </div>
+</section>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+const PROXY_URL  = '/datalab';
+const MAX_GROUPS = 5;
+const MAX_KW     = 20;
+
+const PALETTE = [
+  { line: '#1a5c3a', fill: '#1a5c3a20', light: '#e8f2ec', border: '#a8cdb8', text: '#0f3d26' },
+  { line: '#1a3a5c', fill: '#1a3a5c20', light: '#e8eef6', border: '#a8bed4', text: '#0f2640' },
+  { line: '#8b2635', fill: '#8b263520', light: '#f6e8ea', border: '#d4a8ae', text: '#5c1820' },
+  { line: '#7a4a0a', fill: '#7a4a0a20', light: '#f5ede0', border: '#d4b48a', text: '#50300a' },
+  { line: '#4a1a7a', fill: '#4a1a7a20', light: '#efe8f6', border: '#c0a8d4', text: '#310f52' },
+];
+const DASHES = [[], [6,4], [3,3], [8,3,2,3], [4,4]];
+
+let mode           = 'simple';
+let simpleKeywords = [];
+let groups         = [];
+let chartInst      = null;
+let lastResult     = null;
+
+(function() {
+  const fmt       = d => d.toISOString().slice(0, 10);
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  const ago = new Date(yesterday);
+  ago.setFullYear(ago.getFullYear() - 1);
+  document.getElementById('endDate').value   = fmt(yesterday);
+  document.getElementById('startDate').value = fmt(ago);
+})();
+
+function switchMode(newMode, btn) {
+  mode = newMode;
+  document.querySelectorAll('.mode-tab').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById('modeSimple').style.display = newMode === 'simple' ? 'block' : 'none';
+  document.getElementById('modeGroup').style.display  = newMode === 'group'  ? 'block' : 'none';
+  if (newMode === 'group' && groups.length === 0) addGroup();
+  clearStatus();
+}
+
+function addSimpleKeyword() {
+  const input = document.getElementById('kwInput');
+  const vals  = input.value.split(/[\n\t,]/).map(v => v.trim()).filter(v => v);
+  if (!vals.length) return;
+  let added = 0;
+  for (const val of vals) {
+    if (simpleKeywords.length >= MAX_GROUPS) { setStatus(`키워드는 최대 ${MAX_GROUPS}개까지 입력 가능합니다.`, 'warn'); break; }
+    if (simpleKeywords.includes(val)) continue;
+    simpleKeywords.push(val);
+    added++;
+  }
+  input.value = '';
+  if (added > 0) { renderSimpleTags(); clearStatus(); }
+}
+
+function removeSimpleKeyword(idx) {
+  simpleKeywords.splice(idx, 1);
+  renderSimpleTags();
+}
+
+function renderSimpleTags() {
+  document.getElementById('kwTags').innerHTML = simpleKeywords.map((kw, i) => {
+    const c = PALETTE[i % PALETTE.length];
+    return `<span class="kw-tag" style="background:${c.light};color:${c.text};border-color:${c.border}">
+      ${esc(kw)}<button onclick="removeSimpleKeyword(${i})">×</button>
+    </span>`;
+  }).join('');
+}
+
+function addGroup() {
+  if (groups.length >= MAX_GROUPS) { setStatus(`그룹은 최대 ${MAX_GROUPS}개까지 추가 가능합니다.`, 'warn'); return; }
+  groups.push({ name: '', keywords: [] });
+  renderGroups();
+  clearStatus();
+}
+
+function removeGroup(gi) {
+  groups.splice(gi, 1);
+  renderGroups();
+}
+
+function updateGroupName(gi, val) { groups[gi].name = val; }
+
+function addGroupKeyword(gi) {
+  const input = document.getElementById(`gkw-input-${gi}`);
+  const vals  = input.value.split(/[\n\t,]/).map(v => v.trim()).filter(v => v);
+  if (!vals.length) return;
+  let added = 0;
+  for (const val of vals) {
+    if (groups[gi].keywords.length >= MAX_KW) { setStatus(`키워드는 그룹당 최대 ${MAX_KW}개까지 입력 가능합니다.`, 'warn'); break; }
+    if (groups[gi].keywords.includes(val)) continue;
+    groups[gi].keywords.push(val);
+    added++;
+  }
+  input.value = '';
+  if (groups[gi].keywords.length > 0 && !groups[gi].name) {
+    groups[gi].name = groups[gi].keywords[0];
+    document.getElementById(`gname-${gi}`).value = groups[gi].keywords[0];
+  }
+  if (added > 0) { renderGroupKeywords(gi); clearStatus(); }
+}
+
+function removeGroupKeyword(gi, ki) {
+  groups[gi].keywords.splice(ki, 1);
+  renderGroupKeywords(gi);
+}
+
+function renderGroupKeywords(gi) {
+  const c = PALETTE[gi % PALETTE.length];
+  document.getElementById(`gkw-tags-${gi}`).innerHTML = groups[gi].keywords.map((kw, ki) =>
+    `<span class="group-kw-tag" style="border-color:${c.border};color:${c.text}">
+      ${esc(kw)}<button onclick="removeGroupKeyword(${gi},${ki})">×</button>
+    </span>`
+  ).join('');
+  const label = document.getElementById(`gkw-count-${gi}`);
+  if (label) label.innerHTML = `키워드 <span style="color:var(--text3);font-weight:400">${groups[gi].keywords.length} / ${MAX_KW}</span>`;
+  const inputRow = document.getElementById(`gkw-row-${gi}`);
+  if (inputRow) inputRow.style.display = groups[gi].keywords.length >= MAX_KW ? 'none' : 'flex';
+}
+
+function renderGroups() {
+  document.getElementById('groupList').innerHTML = groups.map((g, gi) => {
+    const c = PALETTE[gi % PALETTE.length];
+    return `
+    <div class="group-card" style="border-color:${c.border}">
+      <div class="group-header">
+        <span class="group-badge" style="color:${c.text};border-color:${c.border}">그룹 ${gi + 1}</span>
+        <input type="text" class="group-name-input" id="gname-${gi}"
+          placeholder="그룹명 (첫 키워드 입력 시 자동 설정)"
+          value="${esc(g.name)}" oninput="updateGroupName(${gi}, this.value)"
+          style="border-color:${c.border}" />
+        <button class="group-delete-btn" onclick="removeGroup(${gi})">×</button>
+      </div>
+      <div class="group-kw-label" id="gkw-count-${gi}">키워드 <span style="color:var(--text3);font-weight:400">${g.keywords.length} / ${MAX_KW}</span></div>
+      <div class="group-kw-tags" id="gkw-tags-${gi}">
+        ${g.keywords.map((kw, ki) =>
+          `<span class="group-kw-tag" style="border-color:${c.border};color:${c.text}">
+            ${esc(kw)}<button onclick="removeGroupKeyword(${gi},${ki})">×</button>
+          </span>`
+        ).join('')}
+      </div>
+      <div class="group-kw-row" id="gkw-row-${gi}" style="display:${g.keywords.length >= MAX_KW ? 'none' : 'flex'}">
+        <textarea id="gkw-input-${gi}" rows="2"
+          placeholder="키워드 입력 후 Ctrl+Enter (쉼표, 줄바꿈, 탭 구분으로 여러 개 동시 입력 가능)"
+          onkeydown="if(event.key==='Enter'&&event.ctrlKey) addGroupKeyword(${gi})"
+          style="height:56px"></textarea>
+        <button class="btn btn-sm" onclick="addGroupKeyword(${gi})">추가</button>
+      </div>
+    </div>`;
+  }).join('');
+  document.getElementById('addGroupBtn').style.display = groups.length >= MAX_GROUPS ? 'none' : 'flex';
+}
+
+function buildKeywordGroups() {
+  if (mode === 'simple') return simpleKeywords.map(kw => ({ groupName: kw, keywords: [kw] }));
+  return groups.map(g => ({ groupName: g.name || g.keywords[0] || '그룹', keywords: g.keywords }));
+}
+
+async function runSearch() {
+  const startDate     = document.getElementById('startDate').value;
+  const endDate       = document.getElementById('endDate').value;
+  const timeUnit      = document.getElementById('timeUnit').value;
+  const device        = document.getElementById('device').value;
+  const gender        = document.getElementById('gender').value;
+  const ages          = document.getElementById('ages').value;
+  const keywordGroups = buildKeywordGroups();
+
+  if (!startDate || !endDate)     { setStatus('조회 기간을 선택해주세요.', 'error'); return; }
+  if (startDate > endDate)        { setStatus('시작일이 종료일보다 늦을 수 없습니다.', 'error'); return; }
+  if (keywordGroups.length === 0) { setStatus('키워드를 1개 이상 입력해주세요.', 'error'); return; }
+  if (mode === 'group' && groups.some(g => g.keywords.length === 0)) {
+    setStatus('모든 그룹에 키워드를 1개 이상 입력해주세요.', 'error'); return;
+  }
+
+  const body = { startDate, endDate, timeUnit, keywordGroups, mode };
+  if (device) body.device = device;
+  if (gender) body.gender = gender;
+  if (ages)   body.ages   = [ages];
+
+  setLoading('조회 중...');
+  document.getElementById('searchBtn').disabled = true;
+
+  try {
+    const res = await fetch(PROXY_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.errorMessage || err.error || `HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    lastResult = { results: data.results, startDate, endDate };
+    saveHistory({ ...body, mode, timeUnit, startDate, endDate });
+    renderResults(data.results);
+    setStatus(`조회 완료 — ${data.results[0]?.data?.length || 0}개 기간 · ${data.results.length}개 키워드`, 'info');
+    document.getElementById('resultSection').style.display = 'block';
+  } catch (e) {
+    setStatus(`오류: ${e.message}`, 'error');
+  } finally {
+    document.getElementById('searchBtn').disabled = false;
+  }
+}
+
+function renderResults(results) {
+  const periods = results[0].data.map(d => d.period);
+  renderStats(results, periods);
+  renderLegend(results);
+  renderChart(results, periods);
+  renderTable(results, periods);
+}
+
+function renderStats(results, periods) {
+  let peakVal = 0, peakKw = '', peakDate = '';
+  const allRatios = results.flatMap(r => r.data.map(d => {
+    if (d.ratio > peakVal) { peakVal = d.ratio; peakKw = r.title; peakDate = d.period; }
+    return d.ratio;
+  }));
+  const avg = (allRatios.reduce((a, b) => a + b, 0) / allRatios.length).toFixed(1);
+  document.getElementById('statGrid').innerHTML = `
+    <div class="stat-card"><div class="stat-label">조회 키워드</div><div class="stat-value">${results.length}<span class="stat-unit">개</span></div></div>
+    <div class="stat-card"><div class="stat-label">조회 기간 수</div><div class="stat-value">${periods.length}<span class="stat-unit">개</span></div></div>
+    <div class="stat-card"><div class="stat-label">최고 지수</div><div class="stat-value">${peakVal}</div><div class="stat-sub">${esc(peakKw)} · ${peakDate}</div></div>
+    <div class="stat-card"><div class="stat-label">전체 평균 지수</div><div class="stat-value">${avg}</div></div>`;
+}
+
+function renderLegend(results) {
+  document.getElementById('legendBox').innerHTML = results.map((r, i) =>
+    `<span class="legend-item"><span class="legend-dot" style="background:${PALETTE[i%PALETTE.length].line}"></span>${esc(r.title)}</span>`
+  ).join('');
+}
+
+function renderChart(results, periods) {
+  const datasets = results.map((r, i) => {
+    const c = PALETTE[i % PALETTE.length];
+    return {
+      label: r.title, data: r.data.map(d => d.ratio),
+      borderColor: c.line, backgroundColor: c.fill,
+      borderDash: DASHES[i % DASHES.length], borderWidth: 2,
+      pointRadius: periods.length > 60 ? 0 : 3, pointHoverRadius: 5,
+      tension: 0.35, fill: false,
+    };
+  });
+  if (chartInst) chartInst.destroy();
+  chartInst = new Chart(document.getElementById('trendChart'), {
+    type: 'line', data: { labels: periods, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { maxTicksLimit: 12, maxRotation: 45, font: { size: 11 }, color: '#6b6860' }, grid: { color: 'rgba(0,0,0,.05)' } },
+        y: { min: 0, max: 100, ticks: { stepSize: 20, font: { size: 11 }, color: '#6b6860' }, grid: { color: 'rgba(0,0,0,.05)' } },
+      },
+    },
+  });
+}
+
+function renderTable(results, periods) {
+  document.getElementById('tableHead').innerHTML =
+    `<tr><th>기간</th>${results.map(r => `<th>${esc(r.title)}</th>`).join('')}</tr>`;
+  document.getElementById('tableBody').innerHTML = periods.map((p, pi) =>
+    `<tr><td>${p}</td>${results.map(r => `<td>${r.data[pi]?.ratio ?? '-'}</td>`).join('')}</tr>`
+  ).join('');
+}
+
+function switchResultTab(tab, btn) {
+  document.querySelectorAll('.result-tab-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById('tabChart').style.display = tab === 'chart' ? 'block' : 'none';
+  document.getElementById('tabTable').style.display = tab === 'table' ? 'block' : 'none';
+}
+
+function downloadCSV() {
+  if (!lastResult) return;
+  const { results, startDate, endDate } = lastResult;
+  const periods = results[0].data.map(d => d.period);
+  const csv = '\uFEFF' + [
+    ['기간', ...results.map(r => r.title)].join(','),
+    ...periods.map((p, pi) => [p, ...results.map(r => r.data[pi]?.ratio ?? '')].join(','))
+  ].join('\n');
+  dl('data:text/csv;charset=utf-8,' + encodeURIComponent(csv), `trend_${startDate}_${endDate}.csv`);
+}
+
+function downloadExcel() {
+  if (!lastResult) return;
+  const { results, startDate, endDate } = lastResult;
+  const periods = results[0].data.map(d => d.period);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
+    ['기간', ...results.map(r => r.title)],
+    ...periods.map((p, pi) => [p, ...results.map(r => r.data[pi]?.ratio ?? '')]),
+  ]), '트렌드');
+  XLSX.writeFile(wb, `trend_${startDate}_${endDate}.xlsx`);
+}
+
+function dl(href, filename) {
+  const a = document.createElement('a'); a.href = href; a.download = filename; a.click();
+}
+
+function setStatus(msg, type) {
+  const el = document.getElementById('statusBar');
+  el.className = `status show ${type}`; el.textContent = msg;
+}
+function setLoading(msg) {
+  const el = document.getElementById('statusBar');
+  el.className = 'status loading show';
+  el.innerHTML = `<span class="spinner"></span>${msg}`;
+}
+function clearStatus() {
+  const el = document.getElementById('statusBar');
+  el.className = 'status'; el.textContent = '';
+}
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+// ── 히스토리 ─────────────────────────────────────────
+async function loadHistory() {
+  try {
+    const res  = await fetch('/history/trend');
+    const list = await res.json();
+    const box  = document.getElementById('historyList');
+
+    if (!list.length) {
+      box.innerHTML = `<p style="font-size:13px;color:var(--text3)">검색 히스토리가 없습니다.</p>`;
+      return;
+    }
+
+    const unitMap   = { date: '일간', week: '주간', month: '월간' };
+    const deviceMap = { pc: 'PC', mo: '모바일', '': '전체' };
+    const genderMap = { m: '남성', f: '여성', '': '전체' };
+    const agesMap   = { '2':'10대','3':'20대','4':'30대','5':'40대','6':'50대 이상','':'전체' };
+
+    box.innerHTML = list.map(h => {
+      const kws = JSON.parse(h.keywords);
+      const kwText = h.mode === 'simple'
+        ? kws.join(', ')
+        : kws.map(g => g.groupName).join(', ');
+      const filters = [deviceMap[h.device], genderMap[h.gender], agesMap[h.ages]]
+        .filter(v => v && v !== '전체').join(' · ') || '전체';
+
+      return `
+      <div class="history-item" onclick="loadHistoryItem(${h.id})">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">
+          <span style="font-size:10px;font-weight:600;padding:2px 6px;border-radius:4px;
+            background:${h.mode === 'group' ? '#e8eef6' : '#e8f2ec'};
+            color:${h.mode === 'group' ? '#0f2640' : '#0f3d26'}">
+            ${h.mode === 'group' ? '그룹' : '키워드'}
+          </span>
+          <div class="history-kw">${esc(kwText)}</div>
+        </div>
+        <div class="history-meta">
+          ${h.start_date} ~ ${h.end_date}
+          · ${unitMap[h.time_unit]}
+          · ${filters}
+          <span class="history-date">${h.created_at}</span>
+        </div>
+        <button class="history-del" onclick="deleteHistory(event, ${h.id})">×</button>
+      </div>`;
+    }).join('');
+  } catch(e) {
+    console.error(e);
+  }
+}
+
+async function saveHistory(body) {
+  const kws = body.mode === 'simple'
+    ? body.keywordGroups.map(g => g.groupName)
+    : body.keywordGroups.map(g => ({ groupName: g.groupName, keywords: g.keywords }));
+
+  await fetch('/history/trend', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      keywords:   kws,
+      mode:       body.mode || 'simple',
+      start_date: body.startDate,
+      end_date:   body.endDate,
+      time_unit:  body.timeUnit,
+      device:     body.device || '',
+      gender:     body.gender || '',
+      ages:       body.ages?.[0] || '',
+    }),
+  });
+  loadHistory();
+}
+
+async function deleteHistory(e, id) {
+  e.stopPropagation();
+  await fetch(`/history/trend/${id}`, { method: 'DELETE' });
+  loadHistory();
+}
+
+async function loadHistoryItem(id) {
+  const res  = await fetch('/history/trend');
+  const list = await res.json();
+  const h    = list.find(x => x.id === id);
+  if (!h) return;
+
+  document.getElementById('startDate').value = h.start_date;
+  document.getElementById('endDate').value   = h.end_date;
+  document.getElementById('timeUnit').value  = h.time_unit;
+  document.getElementById('device').value    = h.device;
+  document.getElementById('gender').value    = h.gender;
+  document.getElementById('ages').value      = h.ages;
+
+  const kws = JSON.parse(h.keywords);
+  if (h.mode === 'simple') {
+    mode = 'simple';
+    simpleKeywords = kws;
+    document.querySelectorAll('.mode-tab').forEach((b, i) => b.classList.toggle('active', i === 0));
+    document.getElementById('modeSimple').style.display = 'block';
+    document.getElementById('modeGroup').style.display  = 'none';
+    renderSimpleTags();
+  } else {
+    mode = 'group';
+    groups = kws.map(g => ({ name: g.groupName, keywords: g.keywords }));
+    document.querySelectorAll('.mode-tab').forEach((b, i) => b.classList.toggle('active', i === 1));
+    document.getElementById('modeSimple').style.display = 'none';
+    document.getElementById('modeGroup').style.display  = 'block';
+    renderGroups();
+  }
+}
+
+document.addEventListener('DOMContentLoaded', loadHistory);
+
+</script>
+{% endblock %}

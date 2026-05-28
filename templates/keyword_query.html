@@ -1,0 +1,322 @@
+{% extends "base.html" %}
+
+{% block title %}키워드 쿼리 조회{% endblock %}
+{% set active = 'keyword-query' %}
+
+{% block head %}
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+{% endblock %}
+
+{% block content %}
+<!-- 최근 검색 -->
+<section class="card" id="historySection">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+    <p class="card-title" style="margin-bottom:0">최근 검색</p>
+  </div>
+  <div id="historyList" style="max-height:240px;overflow-y:auto">
+    <p style="font-size:13px;color:var(--text3)">검색 히스토리가 없습니다.</p>
+  </div>
+</section>
+
+<section class="card">
+  <p class="card-title">키워드 입력 <span id="kwCount" style="font-size:11px;font-weight:400;color:var(--text3)">0 / 100</span></p>
+  <div class="kw-input-row">
+    <textarea id="kwInput" rows="2"
+      placeholder="키워드 입력 후 Ctrl+Enter (쉼표, 줄바꿈, 탭 구분으로 여러 개 동시 입력 가능, 최대 100개)"
+      onkeydown="if(event.key==='Enter'&&event.ctrlKey) addKeyword()"
+      style="height:56px"></textarea>
+    <button class="btn btn-sm" onclick="addKeyword()">추가</button>
+  </div>
+  <div class="kw-tags" id="kwTags"></div>
+  <div style="margin-top:12px">
+    <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer">
+      <input type="checkbox" id="showDetail" style="width:auto;height:auto" />
+      연관 키워드 포함
+    </label>
+  </div>
+</section>
+
+<button class="btn btn-primary" id="searchBtn" onclick="runSearch()"
+  style="width:100%;height:44px;font-size:14px;margin-bottom:16px;justify-content:center">
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+  키워드 조회
+</button>
+
+<div class="status" id="statusBar" role="status" aria-live="polite"></div>
+
+<section id="resultSection" style="display:none">
+  <div class="card">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+      <span id="resultCount" style="font-size:13px;color:var(--text2)"></span>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-sm" onclick="downloadCSV()">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          CSV
+        </button>
+        <button class="btn btn-sm" onclick="downloadExcel()">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+          엑셀
+        </button>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>키워드</th>
+            <th>PC 월검색수</th>
+            <th>모바일 월검색수</th>
+            <th>총 월검색수</th>
+            <th>PC 월클릭수</th>
+            <th>모바일 월클릭수</th>
+            <th>PC 클릭률</th>
+            <th>모바일 클릭률</th>
+            <th>경쟁정도</th>
+          </tr>
+        </thead>
+        <tbody id="resultBody"></tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+const MAX_KW = 100;
+const PALETTE = [
+  { line: '#1a5c3a', fill: '#1a5c3a20', light: '#e8f2ec', border: '#a8cdb8', text: '#0f3d26' },
+  { line: '#1a3a5c', fill: '#1a3a5c20', light: '#e8eef6', border: '#a8bed4', text: '#0f2640' },
+  { line: '#8b2635', fill: '#8b263520', light: '#f6e8ea', border: '#d4a8ae', text: '#5c1820' },
+  { line: '#7a4a0a', fill: '#7a4a0a20', light: '#f5ede0', border: '#d4b48a', text: '#50300a' },
+  { line: '#4a1a7a', fill: '#4a1a7a20', light: '#efe8f6', border: '#c0a8d4', text: '#310f52' },
+];
+
+let keywords   = [];
+let lastResult = [];
+
+document.getElementById('kwInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && e.ctrlKey) addKeyword();
+});
+
+function addKeyword() {
+  const input = document.getElementById('kwInput');
+  const vals  = input.value.split(/[\n\t,]/).map(v => v.trim()).filter(v => v);
+  if (!vals.length) return;
+  let added = 0;
+  for (const val of vals) {
+    if (keywords.length >= MAX_KW) { setStatus(`키워드는 최대 ${MAX_KW}개까지 입력 가능합니다.`, 'warn'); break; }
+    if (keywords.includes(val)) continue;
+    keywords.push(val);
+    added++;
+  }
+  input.value = '';
+  if (added > 0) { renderTags(); clearStatus(); }
+}
+
+function removeKeyword(idx) {
+  keywords.splice(idx, 1);
+  renderTags();
+}
+
+function renderTags() {
+  document.getElementById('kwCount').textContent = `${keywords.length} / 100`;
+  document.getElementById('kwTags').innerHTML = keywords.map((kw, i) => {
+    const c = PALETTE[i % PALETTE.length];
+    return `<span class="kw-tag" style="background:${c.light};color:${c.text};border-color:${c.border}">
+      ${esc(kw)}<button onclick="removeKeyword(${i})">×</button>
+    </span>`;
+  }).join('');
+}
+
+async function runSearch() {
+  if (keywords.length === 0) { setStatus('키워드를 1개 이상 입력해주세요.', 'error'); return; }
+
+  const showDetail = document.getElementById('showDetail').checked ? 1 : 0;
+
+  setLoading('조회 중...');
+  document.getElementById('searchBtn').disabled = true;
+
+  try {
+    const res = await fetch('/searchad/rel-kwd', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ keywords, showDetail }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    const allList = data.keywordList || [];
+    // 중복 제거
+const unique = allList.filter((r, idx, self) =>
+  idx === self.findIndex(t => t.relKeyword === r.relKeyword)
+);
+lastResult = showDetail
+  ? unique
+  : unique.filter(r => keywords.map(k => k.trim()).includes(r.relKeyword.trim()));
+    saveHistory(keywords, showDetail);
+    renderResult(lastResult);
+    setStatus(`조회 완료 — ${lastResult.length}개 키워드`, 'info');
+    document.getElementById('resultSection').style.display = 'block';
+  } catch(e) {
+    setStatus(`오류: ${e.message}`, 'error');
+  } finally {
+    document.getElementById('searchBtn').disabled = false;
+  }
+}
+
+const competitionMap = { '높음': '높음', '중간': '중간', '낮음': '낮음' };
+
+function renderResult(list) {
+  document.getElementById('resultCount').textContent = `총 ${list.length}개 키워드`;
+  document.getElementById('resultBody').innerHTML = list.map(r => {
+    const pc    = r.monthlyPcQcCnt   === '< 10' ? '10 미만' : Number(r.monthlyPcQcCnt).toLocaleString();
+    const mo    = r.monthlyMobileQcCnt === '< 10' ? '10 미만' : Number(r.monthlyMobileQcCnt).toLocaleString();
+    const total = r.monthlyPcQcCnt === '< 10' || r.monthlyMobileQcCnt === '< 10'
+      ? '-'
+      : (Number(r.monthlyPcQcCnt) + Number(r.monthlyMobileQcCnt)).toLocaleString();
+    const pcClick  = r.monthlyAvePcClkCnt != null ? Number(r.monthlyAvePcClkCnt).toLocaleString() : '-';
+    const moClick  = r.monthlyAveMobileClkCnt != null ? Number(r.monthlyAveMobileClkCnt).toLocaleString() : '-';
+    const pcCtr    = r.monthlyAvePcCtr != null ? (Number(r.monthlyAvePcCtr) * 100).toFixed(2) + '%' : '-';
+    const moCtr    = r.monthlyAveMobileCtr != null ? (Number(r.monthlyAveMobileCtr) * 100).toFixed(2) + '%' : '-';
+    const compBadge = {
+      '높음': 'background:#fef0ef;color:#c0392b',
+      '중간': 'background:#fef9ec;color:#7a6010',
+      '낮음': 'background:#e8f2ec;color:#0f3d26',
+    }[r.compIdx] || '';
+
+    return `<tr>
+      <td style="font-weight:500">${esc(r.relKeyword)}</td>
+      <td>${pc}</td>
+      <td>${mo}</td>
+      <td style="font-weight:500">${total}</td>
+      <td>${pcClick}</td>
+      <td>${moClick}</td>
+      <td>${pcCtr}</td>
+      <td>${moCtr}</td>
+      <td><span style="font-size:11px;padding:2px 8px;border-radius:4px;${compBadge}">${r.compIdx}</span></td>
+    </tr>`;
+  }).join('');
+}
+
+function downloadCSV() {
+  if (!lastResult.length) return;
+  const header = ['키워드','PC 월검색수','모바일 월검색수','총 월검색수','PC 월클릭수','모바일 월클릭수','PC 클릭률','모바일 클릭률','경쟁정도'];
+  const rows = lastResult.map(r => [
+    r.relKeyword,
+    r.monthlyPcQcCnt,
+    r.monthlyMobileQcCnt,
+    r.monthlyPcQcCnt === '< 10' || r.monthlyMobileQcCnt === '< 10' ? '-' : Number(r.monthlyPcQcCnt) + Number(r.monthlyMobileQcCnt),
+    r.monthlyAvePcClkCnt,
+    r.monthlyAveMobileClkCnt,
+    (Number(r.monthlyAvePcCtr) * 100).toFixed(2) + '%',
+    (Number(r.monthlyAveMobileCtr) * 100).toFixed(2) + '%',
+    r.compIdx,
+  ]);
+  const csv = '\uFEFF' + [header, ...rows].map(r => r.join(',')).join('\n');
+  dl('data:text/csv;charset=utf-8,' + encodeURIComponent(csv), `keyword_query_${new Date().toISOString().slice(0,10)}.csv`);
+}
+
+function downloadExcel() {
+  if (!lastResult.length) return;
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet([
+    ['키워드','PC 월검색수','모바일 월검색수','총 월검색수','PC 월클릭수','모바일 월클릭수','PC 클릭률','모바일 클릭률','경쟁정도'],
+    ...lastResult.map(r => [
+      r.relKeyword,
+      r.monthlyPcQcCnt,
+      r.monthlyMobileQcCnt,
+      r.monthlyPcQcCnt === '< 10' || r.monthlyMobileQcCnt === '< 10' ? '-' : Number(r.monthlyPcQcCnt) + Number(r.monthlyMobileQcCnt),
+      r.monthlyAvePcClkCnt,
+      r.monthlyAveMobileClkCnt,
+      (Number(r.monthlyAvePcCtr) * 100).toFixed(2) + '%',
+      (Number(r.monthlyAveMobileCtr) * 100).toFixed(2) + '%',
+      r.compIdx,
+    ]),
+  ]);
+  XLSX.utils.book_append_sheet(wb, ws, '키워드 조회');
+  XLSX.writeFile(wb, `keyword_query_${new Date().toISOString().slice(0,10)}.xlsx`);
+}
+
+function dl(href, filename) {
+  const a = document.createElement('a'); a.href = href; a.download = filename; a.click();
+}
+
+function setStatus(msg, type) {
+  const el = document.getElementById('statusBar');
+  el.className = `status show ${type}`; el.textContent = msg;
+}
+function setLoading(msg) {
+  const el = document.getElementById('statusBar');
+  el.className = 'status loading show';
+  el.innerHTML = `<span class="spinner"></span>${msg}`;
+}
+function clearStatus() {
+  const el = document.getElementById('statusBar');
+  el.className = 'status'; el.textContent = '';
+}
+// ── 히스토리 ─────────────────────────────────────────
+async function loadHistory() {
+  try {
+    const res  = await fetch('/history/query');
+    const list = await res.json();
+    const box  = document.getElementById('historyList');
+
+    if (!list.length) {
+      box.innerHTML = `<p style="font-size:13px;color:var(--text3)">검색 히스토리가 없습니다.</p>`;
+      return;
+    }
+
+    box.innerHTML = list.map(h => {
+      const kws = JSON.parse(h.keywords);
+      return `
+      <div class="history-item" onclick="loadHistoryItem(${h.id})">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">
+          ${h.show_detail ? `<span style="font-size:10px;font-weight:600;padding:2px 6px;border-radius:4px;background:#e8eef6;color:#0f2640">연관 포함</span>` : ''}
+          <div class="history-kw">${esc(kws.join(', '))}</div>
+        </div>
+        <div class="history-meta">
+          <span class="history-date">${h.created_at}</span>
+        </div>
+        <button class="history-del" onclick="deleteHistory(event, ${h.id})">×</button>
+      </div>`;
+    }).join('');
+  } catch(e) {
+    console.error(e);
+  }
+}
+
+async function saveHistory(kws, showDetail) {
+  await fetch('/history/query', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ keywords: kws, show_detail: showDetail }),
+  });
+  loadHistory();
+}
+
+async function deleteHistory(e, id) {
+  e.stopPropagation();
+  await fetch(`/history/query/${id}`, { method: 'DELETE' });
+  loadHistory();
+}
+
+async function loadHistoryItem(id) {
+  const res  = await fetch('/history/query');
+  const list = await res.json();
+  const h    = list.find(x => x.id === id);
+  if (!h) return;
+  keywords = JSON.parse(h.keywords);
+  document.getElementById('showDetail').checked = h.show_detail === 1;
+  renderTags();
+}
+
+document.addEventListener('DOMContentLoaded', loadHistory);
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+</script>
+{% endblock %}
