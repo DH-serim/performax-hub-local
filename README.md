@@ -1,5 +1,3 @@
-push test
-
 # Performax Hub
 
 마케터를 위한 내부 배포용 마케팅 분석 플랫폼.
